@@ -17,6 +17,11 @@ def check_size(uploaded_file, max_mb=200):
     return True, "OK"
 
 def read_products(uploaded_file, preview=True, chunksize=300000):
+    """
+    Returns:
+      - if preview=True: a small DataFrame for preview (first 5 rows)
+      - else: iterator of DataFrame chunks (for csv) or an iterator with a single DataFrame (for excel)
+    """
     name = uploaded_file.name.lower()
 
     if name.endswith('.csv'):
@@ -27,6 +32,7 @@ def read_products(uploaded_file, preview=True, chunksize=300000):
         if preview:
             return pd.read_excel(uploaded_file, nrows=5, engine='openpyxl')
         df = pd.read_excel(uploaded_file, engine='openpyxl', dtype=str)
+        # return an iterator for compatibility with chunk processing
         return iter([df])
 
 def read_schedule(uploaded_file, preview=True):
@@ -37,7 +43,6 @@ def read_schedule(uploaded_file, preview=True):
 
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # Required columns
     required = ["branch", "date", "brand"]
     for col in required:
         if col not in df.columns:
@@ -47,21 +52,19 @@ def read_schedule(uploaded_file, preview=True):
 
     df = df[["branch", "date", "brand"]]
 
-    # Parse date column
+    # Parse dates robustly, but keep None for bad parsings
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
 
-    # Split brands
+    # Expand multi-brand cells into multiple rows
     rows = []
     for _, row in df.iterrows():
-        if row["date"] is None:
+        if pd.isna(row["date"]):
             continue
-
         brand_cell = str(row["brand"])
         separators = [';', ',', '/']
-
         for sep in separators:
             if sep in brand_cell:
-                brands = [b.strip() for b in brand_cell.split(sep)]
+                brands = [b.strip() for b in brand_cell.split(sep) if b.strip()]
                 break
         else:
             brands = [brand_cell.strip()]
