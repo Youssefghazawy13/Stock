@@ -1,12 +1,35 @@
 # tests/test_processor.py
-# Ensure repo root is on sys.path so `import src` works in CI environments
+"""
+Robust test bootstrap:
+- Locates repo root by walking parents until it finds 'src' directory or 'app.py'
+- Inserts repo root and repo_root/src into sys.path before importing project modules
+This avoids ModuleNotFoundError: No module named 'src' in CI environments.
+"""
+
 import sys
 from pathlib import Path
 
-repo_root = Path(__file__).resolve().parents[1]
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
+# Find repository root: ascend until we find a folder that contains 'src' or 'app.py'
+here = Path(__file__).resolve()
+repo_root = None
+for parent in [here] + list(here.parents):
+    if (parent / "src").is_dir() or (parent / "app.py").is_file():
+        repo_root = parent
+        break
 
+if repo_root is None:
+    # fallback: use two levels up (common case)
+    repo_root = here.parents[2]
+
+# Ensure repo root and repo_root/src are on sys.path
+repo_root_str = str(repo_root)
+src_path_str = str(repo_root / "src")
+if repo_root_str not in sys.path:
+    sys.path.insert(0, repo_root_str)
+if src_path_str not in sys.path:
+    sys.path.insert(0, src_path_str)
+
+# --- Now safe to import project modules ---
 import pandas as pd
 from src.processor import generate_branch_date_files, create_zip_from_paths
 import datetime
@@ -15,7 +38,7 @@ from zoneinfo import ZoneInfo
 def make_products_df():
     """
     Create an in-memory products DataFrame for testing.
-    Uses neutral placeholder values generated at runtime (no committed fixtures).
+    Neutral placeholder values generated at runtime (no committed fixtures).
     """
     data = {
         "name_en": [f"Product_{i}" for i in range(1, 6)],
@@ -71,8 +94,5 @@ def test_create_zip_from_paths(tmp_path):
     f1.write_text("dummy")
     z = tmp_path / "out.zip"
     create_zip_from_paths([f1], z)
-    assert z.exists()
-    assert z.stat().st_size > 0
-
     assert z.exists()
     assert z.stat().st_size > 0
