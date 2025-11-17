@@ -18,15 +18,18 @@ from zoneinfo import ZoneInfo
 here = Path(__file__).resolve()
 repo_root = None
 for parent in [here] + list(here.parents):
+    # consider this a repo root if it contains .git, app.py, or tests folder sibling
     if (parent / ".git").exists() or (parent / "app.py").exists() or (parent / "tests").exists():
         repo_root = parent
         break
+# fallback
 if repo_root is None:
     repo_root = here.parents[2]
 
-# --- find processor.py under repo root ---
+# --- find processor.py under repo root (search depth is allowed by rglob) ---
 processor_path = None
 for p in repo_root.rglob("processor.py"):
+    # prefer one under a folder named 'src' if found
     if "src" in [part.lower() for part in p.parts]:
         processor_path = p
         break
