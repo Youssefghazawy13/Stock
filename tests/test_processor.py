@@ -1,10 +1,8 @@
 # tests/test_processor.py
 """
-Robust test file that:
-- Locates repository root
-- Finds a processor.py file anywhere under the repo (first match)
-- Loads processor.py as a module via importlib (no need for src package on PYTHONPATH)
-- Uses the functions from the loaded module for testing.
+Robust test file:
+- Finds a processor.py anywhere under the repo
+- Imports it dynamically and uses its functions for tests
 """
 
 from pathlib import Path
@@ -14,32 +12,30 @@ import pandas as pd
 import datetime
 from zoneinfo import ZoneInfo
 
-# --- locate repo root (walk up until we find a sensible boundary) ---
+# locate repo root (walk up until we find a logical boundary)
 here = Path(__file__).resolve()
 repo_root = None
 for parent in [here] + list(here.parents):
-    # consider this a repo root if it contains .git, app.py, or tests folder sibling
     if (parent / ".git").exists() or (parent / "app.py").exists() or (parent / "tests").exists():
         repo_root = parent
         break
-# fallback
 if repo_root is None:
     repo_root = here.parents[2]
 
-# --- find processor.py under repo root (search depth is allowed by rglob) ---
+# find processor.py (prefer under src/)
 processor_path = None
 for p in repo_root.rglob("processor.py"):
-    # prefer one under a folder named 'src' if found
-    if "src" in [part.lower() for part in p.parts]:
+    parts_lower = [part.lower() for part in p.parts]
+    if "src" in parts_lower:
         processor_path = p
         break
     if processor_path is None:
         processor_path = p
 
 if processor_path is None:
-    raise RuntimeError("Could not find processor.py in repository. Ensure file exists under repo root.")
+    raise RuntimeError("Could not find processor.py in repository. Place processor.py under src/ or repo root.")
 
-# --- load the module from file (dynamic import) ---
+# dynamic import
 spec = importlib.util.spec_from_file_location("project_processor", str(processor_path))
 if spec is None or spec.loader is None:
     raise RuntimeError(f"Cannot load module from {processor_path}")
@@ -47,11 +43,11 @@ module = importlib.util.module_from_spec(spec)
 sys.modules["project_processor"] = module
 spec.loader.exec_module(module)
 
-# Get functions from loaded module
+# functions used in tests
 generate_branch_date_files = getattr(module, "generate_branch_date_files")
 create_zip_from_paths = getattr(module, "create_zip_from_paths")
 
-# --- helper test data factories ---
+# helper factories
 def make_products_df():
     data = {
         "name_en": [f"Product_{i}" for i in range(1, 6)],
@@ -76,10 +72,10 @@ def make_schedule_df_for_today():
     ]
     return pd.DataFrame(rows)
 
-# --- tests ---
+# tests
 def test_generate_branch_date_files_and_summary(tmp_path):
     products_df = make_products_df()
-    products_iter = iter([products_df])  # single-chunk iterator
+    products_iter = iter([products_df])
     schedule_df = make_schedule_df_for_today()
 
     outdir = tmp_path / "out"
