@@ -1,5 +1,14 @@
-import pandas as pd
+# tests/test_processor.py
+# Ensure repo root is on sys.path so `import src` works in CI environments
+import sys
 from pathlib import Path
+
+repo_root = Path(__file__).resolve().parents[1]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+import pandas as pd
+from pathlib import Path as PPath
 from src.processor import generate_branch_date_files, create_zip_from_paths
 import datetime
 from zoneinfo import ZoneInfo
@@ -53,4 +62,3 @@ def test_create_zip_from_paths(tmp_path):
     create_zip_from_paths([f1], z)
     assert z.exists()
     assert z.stat().st_size > 0
-
