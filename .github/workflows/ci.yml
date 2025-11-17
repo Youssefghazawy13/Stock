@@ -32,7 +32,9 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Set PYTHONPATH to include src directory
+        # ensure tests can import "src" package
+        run: echo "PYTHONPATH=$(pwd)/src" >> $GITHUB_ENV
+
       - name: Run tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}
         run: pytest -q
