@@ -1,4 +1,4 @@
-name: CI - Python Tests
+name: CI - Python Tests (robust PYTHONPATH)
 
 on:
   push:
@@ -13,27 +13,64 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Debug: show repo layout
+        run: |
+          echo "WORKING DIR: $(pwd)"
+          echo "GITHUB_WORKSPACE: ${{ github.workspace }}"
+          echo "LIST ROOT:"
+          ls -la
+          echo "FIND src directories (maxdepth 6):"
+          find "$(pwd)" -maxdepth 6 -type d -name src -print || true
+          echo "SHOW first 4 levels:"
+          find . -maxdepth 4 -type d -print | sed -n '1,200p' || true
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest openpyxl xlsxwriter
 
-      - name: Set PYTHONPATH to include src directory
-        run: echo "PYTHONPATH=$(pwd)/src" >> $GITHUB_ENV
+      - name: Ensure PYTHONPATH includes repo root and src (env)
+        run: |
+          # add repo root and candidate src paths to GITHUB_ENV
+          echo "PYTHONPATH=${{ github.workspace }}" >> $GITHUB_ENV
+          echo "PYTHONPATH=${{ github.workspace }}:$(pwd)/src" >> $GITHUB_ENV || true
+          # also attempt to find a src folder and add it
+          FOUND_SRC=$(find "$(pwd)" -maxdepth 6 -type d -name src -print -quit || true)
+          if [ -n "${FOUND_SRC}" ]; then
+            echo "Found src at: ${FOUND_SRC}"
+            echo "PYTHONPATH=${FOUND_SRC}" >> $GITHUB_ENV
+            echo "PY_SRC_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "No src dir found under repo root (fallback to repo root)."
+            echo "PY_SRC_FOUND=false" >> $GITHUB_ENV
+          fi
+          echo "Final PYTHONPATH env lines appended."
 
-      - name: Run tests
-        run: pytest -q
+      - name: Confirm PYTHONPATH and python info
+        run: |
+          echo "ENV PYTHONPATH: $PYTHONPATH"
+          python -c "import sys, os; print('cwd=', os.getcwd()); print('sys.path sample=', sys.path[:8])"
+          python -V
+
+      - name: Run tests (inline PYTHONPATH fallback)
+        # set PYTHONPATH inline to ensure pytest sees it even if env propagation odd
+        run: |
+          echo "Running pytest with explicit PYTHONPATH fallbacks..."
+          # try a few PYTHONPATH variants in order until pytest succeeds (exit non-zero stops job)
+          PY1="${{ github.workspace }}"
+          PY2="${{ github.workspace }}/src"
+          PY3="$(pwd)/src"
+          echo "Trying PYTHONPATH=$PY1"
+          PYTHONPATH=$PY1 pytest -q || (
+            echo "Failed with PY1, trying PY2"
+            PYTHONPATH=$PY2 pytest -q || (
+              echo "Failed with PY2, trying PY3"
+              PYTHONPATH=$PY3 pytest -q
+            )
+          )
