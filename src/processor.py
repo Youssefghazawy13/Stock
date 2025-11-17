@@ -1,7 +1,6 @@
 from pathlib import Path
 import pandas as pd
-from src.utils import normalize_columns, validate_product_columns, coerce_quantities
-from src.utils import ensure_category_column
+from src.utils import normalize_columns, validate_product_columns, coerce_quantities, ensure_category_column
 import zipfile
 
 def create_zip_from_paths(paths, zip_path):
@@ -15,12 +14,6 @@ def _truncate_sheet_name(name: str) -> str:
     return name[:31]
 
 def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
-    """
-    products_iter: iterator yielding product DataFrame chunks (or iterator with single DF)
-    schedule_df: DataFrame with columns 'branch' (str), 'date' (datetime.date), 'brand' (str)
-    output_dir: Path
-    Returns: list of generated file paths
-    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     schedule = schedule_df.copy()
@@ -39,22 +32,15 @@ def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
     accum = {}
     branches_found = set()
 
-    # products_iter is an iterator yielding DataFrames (chunks)
     for chunk in products_iter:
-        # ensure category exists and normalized columns
+        # ensure category exists
         chunk = ensure_category_column(chunk)
         chunk = normalize_columns(chunk)
-
-        # validate required columns exist in this chunk (raises if missing)
         validate_product_columns(chunk)
-
-        # numeric quantities and difference
         chunk = coerce_quantities(chunk)
 
-        # normalize matching columns
         chunk["branch_norm"] = chunk["branch_name"].astype(str).str.strip().str.lower()
         chunk["brand_norm"] = chunk["brand"].astype(str).str.strip().str.lower()
-
         branches_found.update(chunk["branch_norm"].unique())
 
         chunk_branches = set(chunk["branch_norm"].unique())
@@ -62,16 +48,12 @@ def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
         for (branch_norm, date_str), brand_set in schedule_map.items():
             if branch_norm not in chunk_branches:
                 continue
-
             branch_rows = chunk[chunk["branch_norm"] == branch_norm]
-
             for brand in brand_set:
                 brand_norm = str(brand).strip().lower()
                 matched = branch_rows[branch_rows["brand_norm"] == brand_norm]
-
                 if matched.empty:
                     continue
-
                 key = (branch_norm, date_str)
                 accum.setdefault(key, {})
                 accum[key].setdefault(brand, [])
@@ -80,7 +62,6 @@ def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
     generated_files = []
 
     for (branch_norm, date_str), brand_set in schedule_map.items():
-        # get original branch name (preserve casing) if available
         original_branch = schedule[ schedule["branch_norm"] == branch_norm ]["branch"].iloc[0] \
             if any(schedule["branch_norm"] == branch_norm) else branch_norm
 
@@ -104,14 +85,36 @@ def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
                     generated_files.append(out_path)
                     continue
 
-            # write each brand sheet
+            # collect summary rows first (aggregate across brands)
+            for brand, rows in accum[key].items():
+                if not rows:
+                    continue
+                df_tmp = pd.DataFrame(rows)
+                df_tmp = normalize_columns(df_tmp)
+                df_tmp = coerce_quantities(df_tmp)
+                df_tmp = ensure_category_column(df_tmp)
+                if set(["name_en", "barcodes", "difference"]).issubset(df_tmp.columns):
+                    for _, r in df_tmp.iterrows():
+                        summary_rows.append({
+                            "Product Name": r.get("name_en"),
+                            "Barcode": r.get("barcodes"),
+                            "Difference": r.get("difference")
+                        })
+
+            # write Summary first
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                summary_df.to_excel(writer, sheet_name="Summary", index=False)
+            else:
+                pd.DataFrame([{"info": "No products included in this report."}]).to_excel(writer, sheet_name="Summary", index=False)
+
+            # then write each brand sheet
             for brand, rows in accum[key].items():
                 if not rows:
                     continue
                 df = pd.DataFrame(rows)
                 df = normalize_columns(df)
                 df = coerce_quantities(df)
-                # ensure category column exists (should, from read)
                 df = ensure_category_column(df)
 
                 cols_order = [
@@ -123,22 +126,6 @@ def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
 
                 sheet_name = _truncate_sheet_name(brand)
                 df_to_write.to_excel(writer, sheet_name=sheet_name, index=False)
-
-                # collect summary lines
-                if set(["name_en", "barcodes", "difference"]).issubset(df_to_write.columns):
-                    for _, r in df_to_write.iterrows():
-                        summary_rows.append({
-                            "Product Name": r.get("name_en"),
-                            "Barcode": r.get("barcodes"),
-                            "Difference": r.get("difference")
-                        })
-
-            # write Summary
-            if summary_rows:
-                summary_df = pd.DataFrame(summary_rows)
-                summary_df.to_excel(writer, sheet_name="Summary", index=False)
-            else:
-                pd.DataFrame([{"info": "No products included in this report."}]).to_excel(writer, sheet_name="Summary", index=False)
 
         generated_files.append(out_path)
 
