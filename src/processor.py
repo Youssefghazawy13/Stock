@@ -89,7 +89,7 @@ _DISPLAY_COL_MAP = {
     "name_en": "Product Name",
     "category": "Category",
     "branch_name": "Branch Name",
-    "barcodes": "Barcodes",
+    "barcodes": "Barcode",            # <-- changed to singular "Barcode"
     "brand": "Brand",
     "available_quantity": "Available Quantity",
     "actual_quantity": "Actual Quantity",
@@ -98,37 +98,22 @@ _DISPLAY_COL_MAP = {
 
 
 def _compute_column_widths(df: pd.DataFrame, headers: List[str]) -> List[int]:
-    """
-    Compute approximate column widths (characters) from header and dataframe content.
-    Returns list of widths aligned with headers order.
-    """
     widths = []
-    # cast to string and compute max len per column
     for col in headers:
-        max_len = len(str(col))  # header length
+        max_len = len(str(col))
         if col in df.columns:
-            # consider up to 1000 rows to avoid huge loops
             series = df[col].astype(str).fillna("")
             try:
                 sample_max = int(series.map(len).max()) if not series.empty else 0
             except Exception:
                 sample_max = 0
             max_len = max(max_len, sample_max)
-        # cap width to reasonable range
         w = min(max(max_len + 2, 8), 60)
         widths.append(w)
     return widths
 
 
 def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_df: pd.DataFrame, output_dir: Path) -> List[Path]:
-    """
-    Generate Excel reports per (branch, date) with formatting:
-      - Display column names mapped to friendly names
-      - Bold headers, bold first column (Product Name)
-      - Difference written as formula referencing Actual Quantity and Available Quantity
-      - Columns auto-sized (approx)
-      - Summary sheet created and positioned as FIRST sheet, containing formulas referencing brand sheets
-    """
     import xlsxwriter
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -147,7 +132,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
 
     all_products = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
 
-    # normalize and ensure category
     all_products = normalize_columns(all_products)
     try:
         all_products = ensure_category_column(all_products)
@@ -155,7 +139,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
         pass
     all_products = coerce_quantities(all_products)
 
-    # prepare normalized keys
     if "branch_name" in all_products.columns:
         all_products["branch_norm_key"] = all_products["branch_name"].astype(str).str.strip().str.lower()
     else:
@@ -166,7 +149,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
     else:
         all_products["brand_norm_key"] = ""
 
-    # grouped index (branch_norm, brand_norm) -> records
     grouped = {}
     for _, row in all_products.iterrows():
         b = str(row.get("branch_norm_key", "")).strip().lower()
@@ -186,7 +168,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 return pb
         return None
 
-    # build schedule_map (branch_key, date_str) -> set(brands)
     schedule_map = {}
     for _, r in schedule_df.iterrows():
         sched_branch_raw = r.get("branch", "")
@@ -208,7 +189,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
 
     generated_files: List[Path] = []
 
-    # For each branch/date create file
     for (branch_key, date_str), brand_set in schedule_map.items():
         sample_rows = all_products[all_products["branch_norm_key"] == branch_key]
         original_branch = sample_rows["branch_name"].iloc[0] if not sample_rows.empty else branch_key
@@ -220,7 +200,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
             workbook = writer.book
             summary_entries = []
 
-            # write brand sheets
             for brand in brand_set:
                 brand_norm = str(brand).strip().lower()
                 rows = grouped.get((branch_key, brand_norm), [])
@@ -241,7 +220,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                     pass
                 df = coerce_quantities(df)
 
-                # ensure actual_quantity exists (blank)
                 if "actual_quantity" not in df.columns:
                     df["actual_quantity"] = ""
                 else:
@@ -250,7 +228,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 if "difference" in df.columns:
                     df = df.drop(columns=["difference"])
 
-                # select desired columns, but keep internal keys for logic
                 cols_order = [
                     "name_en", "category", "branch_name", "barcodes",
                     "brand", "available_quantity", "actual_quantity"
@@ -258,7 +235,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 present_cols = [c for c in cols_order if c in df.columns]
                 df_to_write = df[present_cols].copy()
 
-                # convert internal header names -> display names
+                # Map internal names to display names (Barcode is singular)
                 display_headers = [_DISPLAY_COL_MAP.get(c, c) for c in df_to_write.columns]
                 df_to_write.columns = display_headers
 
@@ -266,13 +243,11 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 df_to_write.to_excel(writer, sheet_name=sheet_name, index=False)
                 worksheet = writer.sheets[sheet_name]
 
-                # map display headers to column letters (position-based)
                 header_cols = list(df_to_write.columns)
                 col_map = {}
                 for idx, col_name in enumerate(header_cols):
                     col_map[col_name] = {"idx": idx, "letter": _col_idx_to_excel_col(idx)}
 
-                # ensure Available Quantity and Actual Quantity exist in mapping (display names)
                 avail_disp = _DISPLAY_COL_MAP.get("available_quantity")
                 actual_disp = _DISPLAY_COL_MAP.get("actual_quantity")
 
@@ -281,7 +256,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                     last_idx += 1
                     letter = _col_idx_to_excel_col(last_idx)
                     worksheet.write(0, last_idx, avail_disp)
-                    # write values if present in df_to_write (it won't be)
                     col_map[avail_disp] = {"idx": last_idx, "letter": letter}
                 if actual_disp not in col_map:
                     last_idx += 1
@@ -289,30 +263,23 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                     worksheet.write(0, last_idx, actual_disp)
                     col_map[actual_disp] = {"idx": last_idx, "letter": letter}
 
-                # write difference header at end
                 diff_idx = max(v["idx"] for v in col_map.values()) + 1
                 diff_letter = _col_idx_to_excel_col(diff_idx)
                 worksheet.write(0, diff_idx, _DISPLAY_COL_MAP.get("difference", "Difference"))
 
-                # write formulas for difference and collect summary refs
                 avail_letter = col_map[avail_disp]["letter"]
                 actual_letter = col_map[actual_disp]["letter"]
 
-                # Build a small DataFrame to compute widths (use df_to_write)
                 widths = _compute_column_widths(df_to_write, header_cols)
-                # For difference column add a width estimate
                 diff_width = 12
                 widths.append(diff_width)
 
-                # Apply header format and bold first column
                 header_format = workbook.add_format({"bold": True})
                 first_col_format = workbook.add_format({"bold": True})
                 default_format = workbook.add_format({})
 
-                # set header row bold
                 worksheet.set_row(0, None, header_format)
 
-                # write formulas and ensure difference formulas are present
                 for row_i in range(len(df_to_write)):
                     excel_row = row_i + 2
                     avail_cell = f"{avail_letter}{excel_row}"
@@ -320,7 +287,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                     formula = f"={actual_cell}-{avail_cell}"
                     worksheet.write_formula(row_i + 1, diff_idx, formula)
 
-                    # prepare summary references using display header letters and excel_row
                     name_letter = col_map.get(_DISPLAY_COL_MAP.get("name_en"))["letter"] if _DISPLAY_COL_MAP.get("name_en") in col_map else None
                     barcode_letter = col_map.get(_DISPLAY_COL_MAP.get("barcodes"))["letter"] if _DISPLAY_COL_MAP.get("barcodes") in col_map else None
                     name_cell_addr = f"'{sheet_name}'!{name_letter}{excel_row}" if name_letter else None
@@ -333,40 +299,31 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                         "diff_cell": diff_cell_addr
                     })
 
-                # set column widths and formatting: bold A column (Product Name), others normal
                 for idx, col_name in enumerate(header_cols):
                     col_width = widths[idx]
                     if idx == 0:
                         worksheet.set_column(idx, idx, col_width, first_col_format)
                     else:
                         worksheet.set_column(idx, idx, col_width, default_format)
-                # set width for difference column
                 worksheet.set_column(diff_idx, diff_idx, widths[-1], default_format)
 
-            # Create Summary sheet as FIRST sheet
+            # Create Summary as FIRST sheet
             summary_ws = workbook.add_worksheet("Summary")
             workbook.worksheets_objs.insert(0, workbook.worksheets_objs.pop())
 
-            # header format and bold first column
             header_format = workbook.add_format({"bold": True})
             first_col_format = workbook.add_format({"bold": True})
             default_format = workbook.add_format({})
 
-            # write header
-            summary_headers = [_DISPLAY_COL_MAP["name_en"], _DISPLAY_COL_MAP["barcodes"], _DISPLAY_COL_MAP["difference"]]
+            # Use exact header names expected by tests: 'Product Name', 'Barcode', 'Difference'
+            summary_headers = [_DISPLAY_COL_MAP["name_en"], "Barcode", _DISPLAY_COL_MAP["difference"]]
             summary_ws.write_row(0, 0, summary_headers, header_format)
 
-            # compute widths for summary: base on collected summary_entries strings
-            # prepare dummy df for computing widths (faster)
             summary_rows = []
             for ent in summary_entries:
-                name_val = ""  # formulas will be used; width estimate from sheet content not available
-                barcode_val = ""
-                diff_val = ""
-                summary_rows.append({"Product Name": name_val, "Barcodes": barcode_val, "Difference": diff_val})
+                summary_rows.append({"Product Name": "", "Barcode": "", "Difference": ""})
             summary_df = pd.DataFrame(summary_rows)
             summary_widths = _compute_column_widths(summary_df, summary_headers)
-            # enforce some min widths
             summary_widths = [max(12, w) for w in summary_widths]
 
             if not summary_entries:
@@ -383,8 +340,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                         summary_ws.write(i, 1, "")
                     summary_ws.write_formula(i, 2, f"={entry['diff_cell']}")
 
-            # apply formatting and widths to Summary
-            # bold first column values: set column A format to first_col_format
+            # Apply formatting/widths to summary
             summary_ws.set_column(0, 0, summary_widths[0], first_col_format)
             summary_ws.set_column(1, 1, summary_widths[1], default_format)
             summary_ws.set_column(2, 2, summary_widths[2], default_format)
