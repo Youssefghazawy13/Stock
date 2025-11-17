@@ -1,241 +1,183 @@
-from pathlib import Path
-import pandas as pd
-import zipfile
-from src.utils import normalize_columns, validate_product_columns, coerce_quantities, ensure_category_column
-
-def create_zip_from_paths(paths, zip_path):
-    """
-    Create a ZIP archive containing the given file paths.
-    """
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for p in paths:
-            z.write(p, arcname=p.name)
-
-def _truncate_sheet_name(name: str) -> str:
-    """
-    Truncate sheet name to Excel's 31-character limit.
-    """
-    if not isinstance(name, str):
-        name = str(name)
-    return name[:31]
-
-def col_idx_to_excel_col(idx: int) -> str:
-    """
-    Convert 0-based column index to Excel column letters (0 -> A, 25 -> Z, 26 -> AA).
-    """
-    letters = ""
-    n = idx + 1
-    while n:
-        n, rem = divmod(n - 1, 26)
-        letters = chr(65 + rem) + letters
-    return letters
-
 def generate_branch_date_files(products_iter, schedule_df, output_dir: Path):
     """
-    Generate one Excel file per (branch, date). Each brand gets its own sheet where:
-      - actual_quantity column is created (blank)
-      - difference column is an Excel formula: =actual_quantity - available_quantity
-    Summary sheet contains formulas referencing each brand sheet so it updates live.
+    Robust version:
+    - consumes products_iter into list of chunks (so we can inspect branch list)
+    - normalizes branch names (strip/lower/remove non-alnum) for tolerant matching
+    - if schedule branch not found exactly, tries to find closest candidate
+    - writes Excel files with blank actual_quantity and formula difference as before
     """
-    # Ensure output dir exists
-    output_dir.mkdir(parents=True, exist_ok=True)
+    import pandas as pd
+    import re
+    # helper: normalize branch for comparison
+    def normalize_text(s):
+        if s is None:
+            return ""
+        s = str(s).strip().lower()
+        # remove non-alphanumeric characters (keep letters and numbers)
+        s = re.sub(r'[^0-9a-z]+', '', s)
+        return s
 
+    # collect all product chunks into memory (needed to inspect branch names)
+    chunks = []
+    try:
+        for c in products_iter:
+            if isinstance(c, pd.DataFrame):
+                chunks.append(c.copy())
+            else:
+                # if something else returned, skip
+                continue
+    except TypeError:
+        # products_iter might be a DataFrame (not iterator)
+        if isinstance(products_iter, pd.DataFrame):
+            chunks = [products_iter.copy()]
+        else:
+            # unexpected, treat as empty
+            chunks = []
+
+    all_products = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+    # Normalize column names to expected form
+    all_products.columns = [str(c).strip() for c in all_products.columns]
+
+    # Ensure category and required columns exist (use your helper)
+    try:
+        all_products = ensure_category_column(all_products)
+    except Exception:
+        pass
+
+    # Map normalized branch -> list of original branch names found
+    all_products['branch_norm_exact'] = all_products.get('branch_name', "").astype(str).str.strip()
+    all_products['branch_norm_key'] = all_products['branch_norm_exact'].apply(normalize_text)
+    branch_map = {}
+    for orig, key in zip(all_products['branch_norm_exact'], all_products['branch_norm_key']):
+        branch_map.setdefault(key, set()).add(orig)
+
+    # helper to find best matching original branch name for a schedule branch
+    def find_best_branch(orig_branch):
+        k = normalize_text(orig_branch)
+        if not k:
+            return None
+        # exact normalized match
+        if k in branch_map:
+            # return one representative original (choose arbitrary)
+            return list(branch_map[k])[0]
+        # try substring or startswith matching against keys
+        for candidate_key, originals in branch_map.items():
+            if candidate_key and (k in candidate_key or candidate_key in k or candidate_key.startswith(k) or k.startswith(candidate_key)):
+                return list(originals)[0]
+        # no match
+        return None
+
+    # Now prepare schedule mapping: prefer normalized matching
     schedule = schedule_df.copy()
-    # normalizing schedule to help matching (we expect schedule to have columns branch, date, brand)
-    schedule["branch_norm"] = schedule["branch"].astype(str).str.strip().str.lower()
-    schedule["brand_norm"] = schedule["brand"].astype(str).str.strip().str.lower()
-    schedule["date_str"] = schedule["date"].apply(lambda d: d.strftime("%d-%m-%Y"))
+    schedule['branch_norm_raw'] = schedule['branch'].astype(str).str.strip()
+    schedule['branch_match'] = schedule['branch_norm_raw'].apply(find_best_branch)
+    # if any schedule row couldn't be matched, branch_match will be None
 
-    # Build map: (branch_norm, date_str) -> set of brands
+    # Build schedule_map using branch_match (original branch names as in products)
     schedule_map = {}
     for _, r in schedule.iterrows():
-        key = (r["branch_norm"], r["date_str"])
-        schedule_map.setdefault(key, set()).add(r["brand"])
-
-    if not schedule_map:
-        return []
-
-    accum = {}  # accum[(branch_norm, date_str)][brand] = list(rows)
-    branches_found = set()
-
-    # Aggregate matching rows from products_iter into accum
-    for chunk in products_iter:
-        chunk = ensure_category_column(chunk)
-        chunk = normalize_columns(chunk)
-        try:
-            validate_product_columns(chunk)
-        except Exception:
-            # If required columns missing in this chunk, skip it
+        matched_branch = r.get('branch_match')
+        date_str = r['date'].strftime("%d-%m-%Y") if not pd.isna(r['date']) else None
+        if matched_branch is None or date_str is None:
             continue
-        chunk = coerce_quantities(chunk)
+        key = (matched_branch.strip().lower(), date_str)
+        schedule_map.setdefault(key, set()).add(r['brand'])
 
-        chunk["branch_norm"] = chunk["branch_name"].astype(str).str.strip().str.lower()
-        chunk["brand_norm"] = chunk["brand"].astype(str).str.strip().str.lower()
-        branches_found.update(chunk["branch_norm"].unique())
-
-        chunk_branches = set(chunk["branch_norm"].unique())
-
-        for (branch_norm, date_str), brand_set in schedule_map.items():
-            if branch_norm not in chunk_branches:
+    # If schedule_map is empty after matching, attempt fallback: use schedule raw branch names
+    if not schedule_map:
+        for _, r in schedule.iterrows():
+            date_str = r['date'].strftime("%d-%m-%Y") if not pd.isna(r['date']) else None
+            if date_str is None:
                 continue
-            branch_rows = chunk[chunk["branch_norm"] == branch_norm]
-            for brand in brand_set:
-                brand_norm = str(brand).strip().lower()
-                matched = branch_rows[branch_rows["brand_norm"] == brand_norm]
-                if matched.empty:
-                    continue
-                key = (branch_norm, date_str)
-                accum.setdefault(key, {})
-                accum[key].setdefault(brand, [])
-                accum[key][brand].extend(matched.to_dict(orient="records"))
+            key = (str(r['branch']).strip().lower(), date_str)
+            schedule_map.setdefault(key, set()).add(r['brand'])
 
+    # proceed as previous implementation but using all_products (not consumed iterator)
     generated_files = []
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # For each (branch,date) generate one Excel file
+    # group products by branch and brand for fast lookup
+    all_products['brand_norm_key'] = all_products.get('brand', "").astype(str).str.strip().str.lower()
+    all_products['branch_norm_key2'] = all_products.get('branch_name', "").astype(str).str.strip().str.lower()
+
+    # build an index: (branch_norm_key2, brand_norm_key) -> DataFrame slice
+    grouped = {}
+    for idx, row in all_products.iterrows():
+        b = row['branch_norm_key2']
+        br = row['brand_norm_key']
+        grouped.setdefault((b, br), []).append(row.to_dict())
+
+    # generate files
     for (branch_norm, date_str), brand_set in schedule_map.items():
-        # recover branch display name from schedule if possible
-        original_branch_series = schedule[schedule["branch_norm"] == branch_norm]["branch"]
-        original_branch = original_branch_series.iloc[0] if not original_branch_series.empty else branch_norm
-
+        # find original branch display name from products
+        sample_rows = all_products[all_products['branch_name'].astype(str).str.strip().str.lower() == branch_norm]
+        original_branch = sample_rows['branch_name'].iloc[0] if not sample_rows.empty else branch_norm
         safe_branch = str(original_branch).replace(" ", "_")
         filename = f"{safe_branch}_{date_str}.xlsx"
         out_path = output_dir / filename
 
+        # open writer and write sheets similar to previous logic
         with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
             workbook = writer.book
-
-            # If no accumulated data for this branch/date, produce an ERROR sheet or info sheet
-            key = (branch_norm, date_str)
-            if key not in accum:
-                if branch_norm not in branches_found:
-                    pd.DataFrame([{"error": f"No products found for branch '{original_branch}'."}]) \
-                        .to_excel(writer, sheet_name="ERROR", index=False)
-                    generated_files.append(out_path)
-                    continue
-                else:
-                    pd.DataFrame([{"error": f"No matching products for scheduled brands on {date_str}."}]) \
-                        .to_excel(writer, sheet_name="ERROR", index=False)
-                    generated_files.append(out_path)
-                    continue
-
-            # summary_entries will hold references to product cells for building the formula Summary
-            summary_entries = []  # elements: {"sheet": sheet_name, "name_cell": addr, "barcode_cell": addr, "diff_cell": addr}
-
-            # Write brand sheets
-            for brand, rows in accum[key].items():
+            summary_entries = []
+            for brand in brand_set:
+                bnorm = str(brand).strip().lower()
+                rows = grouped.get((branch_norm, bnorm), [])
+                if not rows:
+                    # try approximate brand match among keys
+                    candidate_rows = []
+                    for (bk, brk), recs in grouped.items():
+                        if bk == branch_norm and (bnorm in brk or brk in bnorm):
+                            candidate_rows.extend(recs)
+                    rows = candidate_rows
                 if not rows:
                     continue
                 df = pd.DataFrame(rows)
-                df = normalize_columns(df)
-                df = coerce_quantities(df)
+                # ensure required cols exist and ensure category
                 df = ensure_category_column(df)
-
-                # Desired columns order for output
-                cols_order = [
-                    "name_en", "category", "branch_name", "barcodes",
-                    "brand", "available_quantity", "actual_quantity", "difference"
-                ]
-
-                # Ensure actual_quantity exists (blank if missing)
-                if "actual_quantity" not in df.columns:
-                    df["actual_quantity"] = ""  # blank for the user to fill later
+                # create actual_quantity if missing
+                if 'actual_quantity' not in df.columns:
+                    df['actual_quantity'] = ""
                 else:
-                    df["actual_quantity"] = df["actual_quantity"].fillna("")
-
-                # Remove difference if present; we'll write Excel formulas instead
-                if "difference" in df.columns:
-                    df = df.drop(columns=["difference"])
-
-                present_cols = [c for c in cols_order if c in df.columns]
-                df_to_write = df[present_cols].copy()
-
-                sheet_name = _truncate_sheet_name(str(brand))
-                # Write dataframe to sheet (this writes headers and values)
+                    df['actual_quantity'] = df['actual_quantity'].fillna("")
+                # select and reorder columns
+                cols_order = ["name_en","category","branch_name","barcodes","brand","available_quantity","actual_quantity"]
+                present = [c for c in cols_order if c in df.columns]
+                df_to_write = df[present].copy()
+                sheet_name = str(brand)[:31] if brand else "Brand"
                 df_to_write.to_excel(writer, sheet_name=sheet_name, index=False)
-
                 worksheet = writer.sheets[sheet_name]
-
-                # Map header columns to Excel letters
-                header_cols = list(df_to_write.columns)
-                col_map = {}
-                for idx, col_name in enumerate(header_cols):
-                    excel_col_letter = col_idx_to_excel_col(idx)  # 0 -> A
-                    col_map[col_name] = {"idx": idx, "letter": excel_col_letter}
-
-                # If available_quantity missing (unlikely) ensure it's present
-                if "available_quantity" not in col_map:
-                    # append available_quantity
-                    append_idx = len(header_cols)
-                    excel_col_letter = col_idx_to_excel_col(append_idx)
-                    worksheet.write(0, append_idx, "available_quantity")
-                    for r_idx, val in enumerate(df_to_write.get("available_quantity", []), start=1):
-                        worksheet.write(r_idx, append_idx, val)
-                    col_map["available_quantity"] = {"idx": append_idx, "letter": excel_col_letter}
-
-                # Ensure actual_quantity in map (we created earlier)
-                if "actual_quantity" not in col_map:
-                    append_idx = len(header_cols)
-                    excel_col_letter = col_idx_to_excel_col(append_idx)
-                    worksheet.write(0, append_idx, "actual_quantity")
-                    for r_idx in range(1, len(df_to_write) + 1):
-                        worksheet.write(r_idx, append_idx, "")
-                    col_map["actual_quantity"] = {"idx": append_idx, "letter": excel_col_letter}
-
-                # Place the difference column at the end if not present
-                if "difference" not in col_map:
-                    diff_col_idx = max([v["idx"] for v in col_map.values()]) + 1
-                    diff_col_letter = col_idx_to_excel_col(diff_col_idx)
-                    worksheet.write(0, diff_col_idx, "difference")
-                else:
-                    diff_col_idx = col_map["difference"]["idx"]
-                    diff_col_letter = col_map["difference"]["letter"]
-
-                avail_letter = col_map["available_quantity"]["letter"]
-                actual_letter = col_map["actual_quantity"]["letter"]
-
-                # Write formula for each data row
-                for row_i in range(len(df_to_write)):
-                    excel_row = row_i + 2  # Excel data starts at row 2 (1-based)
-                    avail_cell = f"{avail_letter}{excel_row}"
-                    actual_cell = f"{actual_letter}{excel_row}"
-                    formula = f"={actual_cell}-{avail_cell}"
-                    worksheet.write_formula(row_i + 1, diff_col_idx, formula)
-
-                    # Prepare summary references
-                    name_letter = col_map.get("name_en", {}).get("letter")
-                    barcode_letter = col_map.get("barcodes", {}).get("letter")
-                    diff_cell_addr = f"'{sheet_name}'!{diff_col_letter}{excel_row}"
-                    name_cell_addr = f"'{sheet_name}'!{name_letter}{excel_row}" if name_letter else None
-                    barcode_cell_addr = f"'{sheet_name}'!{barcode_letter}{excel_row}" if barcode_letter else None
-
-                    summary_entries.append({
-                        "sheet": sheet_name,
-                        "name_cell": name_cell_addr,
-                        "barcode_cell": barcode_cell_addr,
-                        "diff_cell": diff_cell_addr
-                    })
-
-            # Now create Summary sheet and write formulas referencing brand sheets
-            summary_sheet_name = "Summary"
-            # Use workbook.add_worksheet to avoid pandas overwriting later
-            worksheet_summary = workbook.add_worksheet(summary_sheet_name)
-            # Header
-            worksheet_summary.write_row(0, 0, ["Product Name", "Barcode", "Difference"])
-
-            for sr_idx, entry in enumerate(summary_entries, start=1):
-                # Product Name
-                if entry["name_cell"]:
-                    worksheet_summary.write_formula(sr_idx, 0, f"={entry['name_cell']}")
-                else:
-                    worksheet_summary.write(sr_idx, 0, "")
-                # Barcode
-                if entry["barcode_cell"]:
-                    worksheet_summary.write_formula(sr_idx, 1, f"={entry['barcode_cell']}")
-                else:
-                    worksheet_summary.write(sr_idx, 1, "")
-                # Difference
-                worksheet_summary.write_formula(sr_idx, 2, f"={entry['diff_cell']}")
-
+                headers = list(df_to_write.columns)
+                # compute column letters
+                def letter(i):
+                    s=""
+                    n=i+1
+                    while n:
+                        n,rem=divmod(n-1,26)
+                        s=chr(65+rem)+s
+                    return s
+                col_map = {h: letter(i) for i,h in enumerate(headers)}
+                diff_col_idx = len(headers)
+                diff_col_letter = letter(diff_col_idx)
+                worksheet.write(0, diff_col_idx, "difference")
+                for r_i in range(len(df_to_write)):
+                    excel_row = r_i + 2
+                    avail = f"{col_map['available_quantity']}{excel_row}"
+                    actual = f"{col_map['actual_quantity']}{excel_row}"
+                    formula = f"={actual}-{avail}"
+                    worksheet.write_formula(r_i+1, diff_col_idx, formula)
+                    name_cell = f"'{sheet_name}'!{col_map.get('name_en','A')}{excel_row}"
+                    barcode_cell = f"'{sheet_name}'!{col_map.get('barcodes','B')}{excel_row}"
+                    diff_cell = f"'{sheet_name}'!{diff_col_letter}{excel_row}"
+                    summary_entries.append((name_cell, barcode_cell, diff_cell))
+            # summary
+            if summary_entries:
+                summary_ws = workbook.add_worksheet("Summary")
+                summary_ws.write_row(0,0,["Product Name","Barcode","Difference"])
+                for i, (ncell, bcell, dcell) in enumerate(summary_entries, start=1):
+                    summary_ws.write_formula(i,0,f"={ncell}")
+                    summary_ws.write_formula(i,1,f"={bcell}")
+                    summary_ws.write_formula(i,2,f"={dcell}")
         generated_files.append(out_path)
 
     return generated_files
