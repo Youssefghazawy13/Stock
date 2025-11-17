@@ -1,21 +1,19 @@
 import streamlit as st
-from src.io_utils import read_products, read_schedule, allowed_file, check_size
-from src.processor import generate_branch_date_files, create_zip_from_paths
 from pathlib import Path
 import tempfile
+import datetime
+from zoneinfo import ZoneInfo
+
+from src.io_utils import read_products, read_schedule, allowed_file, check_size
+from src.processor import generate_branch_date_files, create_zip_from_paths
+from src.utils import ensure_category_column
 
 st.set_page_config(page_title="Stock Counting Application", layout="wide")
-
 st.title("Stock Counting Application")
-
-st.markdown("""
-Upload the **Products File** and the **Counting Schedule File**.
-
-The app will generate:
-- One Excel file per **(Branch, Date)** schedule entry  
-- One sheet per **Brand** inside each Excel file  
-- A ZIP archive containing all generated Excel files  
-""")
+st.markdown(
+    "Upload a Products file and a Counting Schedule. The app will generate reports for **today's date** "
+    "(Africa/Cairo timezone) and provide a ZIP download of the generated Excel files."
+)
 
 uploaded_products = st.file_uploader(
     "Upload Products File (CSV, XLS, XLSX) – max 200MB",
@@ -26,10 +24,7 @@ uploaded_schedule = st.file_uploader(
     type=['csv', 'xls', 'xlsx']
 )
 
-# -----------------------------------------------------------
-# PRODUCTS FILE PREVIEW
-# -----------------------------------------------------------
-
+# show previews
 if uploaded_products:
     ok, msg = allowed_file(uploaded_products)
     if not ok:
@@ -41,15 +36,11 @@ if uploaded_products:
         else:
             try:
                 preview = read_products(uploaded_products, preview=True)
-                st.subheader("Products Preview (first 5 rows)")
+                st.subheader("Products preview (first rows)")
                 st.dataframe(preview)
-                st.success("Products file loaded successfully")
+                st.success("Products file loaded for preview.")
             except Exception as e:
                 st.error(f"Error reading products file: {e}")
-
-# -----------------------------------------------------------
-# SCHEDULE FILE PREVIEW
-# -----------------------------------------------------------
 
 if uploaded_schedule:
     ok, msg = allowed_file(uploaded_schedule)
@@ -62,47 +53,82 @@ if uploaded_schedule:
         else:
             try:
                 preview = read_schedule(uploaded_schedule, preview=True)
-                st.subheader("Schedule Preview (first 10 rows)")
+                st.subheader("Schedule preview (first rows)")
                 st.dataframe(preview)
-                st.success("Schedule file loaded successfully")
+                st.success("Schedule file loaded for preview.")
             except Exception as e:
                 st.error(f"Error reading schedule file: {e}")
 
-# -----------------------------------------------------------
-# GENERATE OUTPUT FILES
-# -----------------------------------------------------------
-
-if st.button("Generate Reports"):
+# Generate today's reports
+if st.button("Generate Today's Reports"):
 
     if not uploaded_products or not uploaded_schedule:
-        st.error("Please upload BOTH files.")
+        st.error("Please upload BOTH files before generating reports.")
     else:
-        with st.spinner("Generating files... Please wait..."):
+        with st.spinner("Preparing today's reports..."):
             out_dir = Path(tempfile.mkdtemp(prefix="stock_reports_"))
 
             try:
+                # read full schedule expanded
                 schedule_df = read_schedule(uploaded_schedule, preview=False)
-                products_iter = read_products(uploaded_products, preview=False)
 
-                generated_files = generate_branch_date_files(
-                    products_iter,
-                    schedule_df,
-                    out_dir
-                )
+                # compute today's date in Africa/Cairo
+                try:
+                    tz = ZoneInfo("Africa/Cairo")
+                except Exception:
+                    tz = datetime.timezone.utc
+                today_local = datetime.datetime.now(tz).date()
 
-                if not generated_files:
-                    st.warning("No reports were generated. Check your files.")
+                # filter schedule to today only
+                schedule_for_today = schedule_df[schedule_df["date"] == today_local]
+
+                st.subheader(f"Schedule entries for today: {today_local}")
+                if schedule_for_today.empty:
+                    st.warning(f"No scheduled entries match today's date: {today_local}. No reports generated.")
                 else:
-                    zip_path = out_dir / "Stock_Reports.zip"
-                    create_zip_from_paths(generated_files, zip_path)
+                    st.dataframe(schedule_for_today)
 
-                    st.success(f"Generated {len(generated_files)} files.")
-                    with open(zip_path, "rb") as f:
-                        st.download_button(
-                            label="Download All Reports (ZIP)",
-                            data=f,
-                            file_name="Stock_Reports.zip"
-                        )
+                    # show a small preview of matched products (first chunk)
+                    try:
+                        products_iter = read_products(uploaded_products, preview=False)
+                        first_chunk = next(products_iter)
+                        preview_products = ensure_category_column(first_chunk)
+                        branches = schedule_for_today["branch"].str.strip().str.lower().unique().tolist()
+                        brands = schedule_for_today["brand"].str.strip().str.lower().unique().tolist()
+                        preview_matched = preview_products[
+                            preview_products["branch_name"].astype(str).str.strip().str.lower().isin(branches) &
+                            preview_products["brand"].astype(str).str.strip().str.lower().isin(brands)
+                        ]
+                        st.subheader("Preview of matched products (up to 100 rows)")
+                        st.dataframe(preview_matched.head(100))
+                        # rewind: recreate products_iter for full processing (re-open)
+                        products_iter = read_products(uploaded_products, preview=False)
+                    except StopIteration:
+                        st.info("Products file appears empty.")
+                        products_iter = read_products(uploaded_products, preview=False)
+                    except Exception as e:
+                        st.warning(f"Could not preview matched products: {e}")
+                        products_iter = read_products(uploaded_products, preview=False)
+
+                    generated_files = generate_branch_date_files(
+                        products_iter,
+                        schedule_for_today,
+                        out_dir
+                    )
+
+                    if not generated_files:
+                        st.warning("No reports were generated. Check your files and mappings.")
+                    else:
+                        zip_path = out_dir / f"Stock_Reports_{today_local.strftime('%d-%m-%Y')}.zip"
+                        create_zip_from_paths(generated_files, zip_path)
+
+                        st.success(f"Generated {len(generated_files)} file(s) for date {today_local}.")
+                        with open(zip_path, "rb") as f:
+                            st.download_button(
+                                label="Download Today's Reports (ZIP)",
+                                data=f,
+                                file_name=zip_path.name
+                            )
 
             except Exception as e:
                 st.error(f"An error occurred during processing: {e}")
