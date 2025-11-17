@@ -1,4 +1,6 @@
 import pandas as pd
+from typing import Iterator
+from src.utils import ensure_category_column
 
 def allowed_file(uploaded_file):
     name = uploaded_file.name.lower()
@@ -16,66 +18,30 @@ def check_size(uploaded_file, max_mb=200):
         return False, f"File size exceeds {max_mb}MB."
     return True, "OK"
 
-def read_products(uploaded_file, preview=True, chunksize=300000):
+def read_products(uploaded_file, preview=True, chunksize=300000) -> Iterator[pd.DataFrame]:
     """
     Returns:
-      - if preview=True: a small DataFrame for preview (first 5 rows)
-      - else: iterator of DataFrame chunks (for csv) or an iterator with a single DataFrame (for excel)
+      - if preview=True: a small DataFrame for preview (first 5 rows), with computed 'category' column.
+      - else: iterator of DataFrame chunks (for csv) or an iterator with a single DataFrame (for excel).
     """
     name = uploaded_file.name.lower()
 
     if name.endswith('.csv'):
         if preview:
-            return pd.read_csv(uploaded_file, nrows=5)
-        return pd.read_csv(uploaded_file, chunksize=chunksize, dtype=str)
+            df = pd.read_csv(uploaded_file, nrows=5, dtype=str)
+            df = ensure_category_column(df)
+            return df
+        # stream in chunks, ensure category in each chunk
+        iterator = pd.read_csv(uploaded_file, chunksize=chunksize, dtype=str)
+        for chunk in iterator:
+            chunk = ensure_category_column(chunk)
+            yield chunk
     else:
         if preview:
-            return pd.read_excel(uploaded_file, nrows=5, engine='openpyxl')
+            df = pd.read_excel(uploaded_file, nrows=5, engine='openpyxl', dtype=str)
+            df = ensure_category_column(df)
+            return df
         df = pd.read_excel(uploaded_file, engine='openpyxl', dtype=str)
-        # return an iterator for compatibility with chunk processing
-        return iter([df])
-
-def read_schedule(uploaded_file, preview=True):
-    name = uploaded_file.name.lower()
-
-    df = pd.read_csv(uploaded_file, dtype=str) if name.endswith('.csv') \
-        else pd.read_excel(uploaded_file, engine='openpyxl', dtype=str)
-
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    required = ["branch", "date", "brand"]
-    for col in required:
-        if col not in df.columns:
-            if preview:
-                return df.head(10)
-            raise ValueError(f"Missing required column: {col}")
-
-    df = df[["branch", "date", "brand"]]
-
-    # Parse dates robustly, but keep None for bad parsings
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-
-    # Expand multi-brand cells into multiple rows
-    rows = []
-    for _, row in df.iterrows():
-        if pd.isna(row["date"]):
-            continue
-        brand_cell = str(row["brand"])
-        separators = [';', ',', '/']
-        for sep in separators:
-            if sep in brand_cell:
-                brands = [b.strip() for b in brand_cell.split(sep) if b.strip()]
-                break
-        else:
-            brands = [brand_cell.strip()]
-
-        for b in brands:
-            if b:
-                rows.append({
-                    "branch": row["branch"].strip(),
-                    "date": row["date"],
-                    "brand": b
-                })
-
-    out = pd.DataFrame(rows)
-    return out.head(10) if preview else out
+        df = ensure_category_column(df)
+        # return a single-chunk iterator for compatibility
+        yield df
