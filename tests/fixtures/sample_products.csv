@@ -1,1 +1,5 @@
+name_ar,name_en,branch_name,barcodes,brand,available_quantity
+اسم1,Item1,Branch A,1111111111111,Brand X,10
+اسم2,Item2,Branch A,2222222222222,Brand Y,5
+اسم3,Item3,Branch B,3333333333333,Brand Z,2
 
