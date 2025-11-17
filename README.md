@@ -4,5 +4,5 @@ Streamlit app that ingests a Products export and a Counting schedule and produce
 
 ## Quick start (local)
 
-1. Clone repo:
+1. Clone repo:https://github.com/YOURUSERNAME/stock.git
 
