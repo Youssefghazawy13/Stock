@@ -13,7 +13,7 @@ from src.processor import generate_branch_date_files, create_zip_from_paths
 from src.utils import ensure_category_column
 
 st.set_page_config(page_title="Inventory / Stock Counting", layout="wide")
-st.title("Inventory Application — Stock Counting Reports")
+st.title("Slot-X Inventory Application — Stock Counting Reports")
 st.markdown(
     "Upload a **Products** file and a **Counting Schedule** file. "
     "The app will generate Excel reports for *today* (Africa/Cairo). "
