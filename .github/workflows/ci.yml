@@ -33,7 +33,6 @@ jobs:
           pip install pytest
 
       - name: Set PYTHONPATH to include src directory
-        # ensure tests can import "src" package
         run: echo "PYTHONPATH=$(pwd)/src" >> $GITHUB_ENV
 
       - name: Run tests
