@@ -1,15 +1,15 @@
 # tests/test_processor.py
 """
-Robust test bootstrap:
-- Locates repo root by walking parents until it finds 'src' directory or 'app.py'
-- Inserts repo root and repo_root/src into sys.path before importing project modules
-This avoids ModuleNotFoundError: No module named 'src' in CI environments.
+Bootstrap to make local src importable during tests.
+This locates the repository root (folder containing 'src' or 'app.py')
+and prepends it and repo_root/src to sys.path before importing project modules.
 """
 
 import sys
+import os
 from pathlib import Path
 
-# Find repository root: ascend until we find a folder that contains 'src' or 'app.py'
+# locate repo root by walking up until we find 'src' directory or 'app.py'
 here = Path(__file__).resolve()
 repo_root = None
 for parent in [here] + list(here.parents):
@@ -18,28 +18,25 @@ for parent in [here] + list(here.parents):
         break
 
 if repo_root is None:
-    # fallback: use two levels up (common case)
+    # fallback: two levels up
     repo_root = here.parents[2]
 
-# Ensure repo root and repo_root/src are on sys.path
 repo_root_str = str(repo_root)
-src_path_str = str(repo_root / "src")
+src_dir = str(repo_root / "src")
+
+# Add repo root and src directory to sys.path
 if repo_root_str not in sys.path:
     sys.path.insert(0, repo_root_str)
-if src_path_str not in sys.path:
-    sys.path.insert(0, src_path_str)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
-# --- Now safe to import project modules ---
+# --- safe to import project modules now ---
 import pandas as pd
 from src.processor import generate_branch_date_files, create_zip_from_paths
 import datetime
 from zoneinfo import ZoneInfo
 
 def make_products_df():
-    """
-    Create an in-memory products DataFrame for testing.
-    Neutral placeholder values generated at runtime (no committed fixtures).
-    """
     data = {
         "name_en": [f"Product_{i}" for i in range(1, 6)],
         "branch_name": ["Branch_A", "Branch_A", "Branch_B", "Branch_A", "Branch_B"],
@@ -51,15 +48,11 @@ def make_products_df():
     return pd.DataFrame(data)
 
 def make_schedule_df_for_today():
-    """
-    Create a schedule DataFrame with rows for today's date (Africa/Cairo).
-    """
     try:
         tz = ZoneInfo("Africa/Cairo")
     except Exception:
         tz = datetime.timezone.utc
     today = datetime.datetime.now(tz).date()
-
     rows = [
         {"branch": "Branch_A", "date": today, "brand": "Brand_1"},
         {"branch": "Branch_A", "date": today, "brand": "Brand_2"},
@@ -69,23 +62,18 @@ def make_schedule_df_for_today():
 
 def test_generate_branch_date_files_and_summary(tmp_path):
     products_df = make_products_df()
-    products_iter = iter([products_df])  # single-chunk iterator
+    products_iter = iter([products_df])
     schedule_df = make_schedule_df_for_today()
 
     outdir = tmp_path / "out"
     outdir.mkdir()
-
     generated = generate_branch_date_files(products_iter, schedule_df, outdir)
 
-    # Expect at least one generated file
     assert len(generated) >= 1
-
     first = generated[0]
     assert first.exists()
-
     xls = pd.ExcelFile(first)
     assert "Summary" in xls.sheet_names
-
     summary = pd.read_excel(first, sheet_name="Summary")
     assert set(["Product Name", "Barcode", "Difference"]).issubset(set(summary.columns))
 
