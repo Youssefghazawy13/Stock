@@ -37,10 +37,8 @@ jobs:
 
       - name: Ensure PYTHONPATH includes repo root and src (env)
         run: |
-          # add repo root and candidate src paths to GITHUB_ENV
           echo "PYTHONPATH=${{ github.workspace }}" >> $GITHUB_ENV
           echo "PYTHONPATH=${{ github.workspace }}:$(pwd)/src" >> $GITHUB_ENV || true
-          # also attempt to find a src folder and add it
           FOUND_SRC=$(find "$(pwd)" -maxdepth 6 -type d -name src -print -quit || true)
           if [ -n "${FOUND_SRC}" ]; then
             echo "Found src at: ${FOUND_SRC}"
@@ -59,10 +57,8 @@ jobs:
           python -V
 
       - name: Run tests (inline PYTHONPATH fallback)
-        # set PYTHONPATH inline to ensure pytest sees it even if env propagation odd
         run: |
           echo "Running pytest with explicit PYTHONPATH fallbacks..."
-          # try a few PYTHONPATH variants in order until pytest succeeds (exit non-zero stops job)
           PY1="${{ github.workspace }}"
           PY2="${{ github.workspace }}/src"
           PY3="$(pwd)/src"
