@@ -1,4 +1,4 @@
-name: CI - Python Tests (robust PYTHONPATH)
+name: CI - Python Tests
 
 on:
   push:
@@ -13,18 +13,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Debug: show repo layout
+      - name: Show working directory (debug)
         run: |
-          echo "WORKING DIR: $(pwd)"
-          echo "GITHUB_WORKSPACE: ${{ github.workspace }}"
-          echo "LIST ROOT:"
+          echo "PWD: $(pwd)"
+          echo "Listing root:"
           ls -la
-          echo "FIND src directories (maxdepth 6):"
-          find "$(pwd)" -maxdepth 6 -type d -name src -print || true
-          echo "SHOW first 4 levels:"
-          find . -maxdepth 4 -type d -print | sed -n '1,200p' || true
 
-      - name: Set up Python 3.10
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
@@ -35,38 +30,35 @@ jobs:
           pip install -r requirements.txt
           pip install pytest openpyxl xlsxwriter
 
-      - name: Ensure PYTHONPATH includes repo root and src (env)
+      - name: Set PYTHONPATH to repo/src if exists, else repo root
         run: |
-          echo "PYTHONPATH=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${{ github.workspace }}:$(pwd)/src" >> $GITHUB_ENV || true
-          FOUND_SRC=$(find "$(pwd)" -maxdepth 6 -type d -name src -print -quit || true)
-          if [ -n "${FOUND_SRC}" ]; then
-            echo "Found src at: ${FOUND_SRC}"
-            echo "PYTHONPATH=${FOUND_SRC}" >> $GITHUB_ENV
-            echo "PY_SRC_FOUND=true" >> $GITHUB_ENV
+          # try to set PYTHONPATH to repo/src if that folder exists
+          if [ -d "./src" ]; then
+            echo "Found ./src, setting PYTHONPATH to ./src"
+            echo "PYTHONPATH=$(pwd)/src" >> $GITHUB_ENV
           else
-            echo "No src dir found under repo root (fallback to repo root)."
-            echo "PY_SRC_FOUND=false" >> $GITHUB_ENV
+            # try to find src anywhere below repo (depth 4)
+            FOUND=$(find . -maxdepth 4 -type d -name src -print -quit || true)
+            if [ -n "$FOUND" ]; then
+              echo "Found src at $FOUND, setting PYTHONPATH"
+              echo "PYTHONPATH=$(pwd)/$FOUND" >> $GITHUB_ENV
+            else
+              echo "No src directory found; setting PYTHONPATH to repo root"
+              echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+            fi
           fi
-          echo "Final PYTHONPATH env lines appended."
+          echo "PYTHONPATH set to: $PYTHONPATH"
 
-      - name: Confirm PYTHONPATH and python info
+      - name: Show PYTHONPATH and python info
         run: |
           echo "ENV PYTHONPATH: $PYTHONPATH"
-          python -c "import sys, os; print('cwd=', os.getcwd()); print('sys.path sample=', sys.path[:8])"
+          python -c "import sys; print('sys.path sample =', sys.path[:6])"
           python -V
 
-      - name: Run tests (inline PYTHONPATH fallback)
+      - name: Run tests (with explicit fallback)
         run: |
-          echo "Running pytest with explicit PYTHONPATH fallbacks..."
-          PY1="${{ github.workspace }}"
-          PY2="${{ github.workspace }}/src"
-          PY3="$(pwd)/src"
-          echo "Trying PYTHONPATH=$PY1"
-          PYTHONPATH=$PY1 pytest -q || (
-            echo "Failed with PY1, trying PY2"
-            PYTHONPATH=$PY2 pytest -q || (
-              echo "Failed with PY2, trying PY3"
-              PYTHONPATH=$PY3 pytest -q
-            )
-          )
+          # Try running pytest with a few PYTHONPATH fallbacks
+          PY1="$(pwd)/src"
+          PY2="$(pwd)"
+          echo "Trying pytest with PYTHONPATH=$PYTHONPATH"
+          pytest -q || ( echo "pytest failed with default env; trying with PY1"; PYTHONPATH=$PY1 pytest -q ) || ( echo "pytest failed with PY1; trying PY2"; PYTHONPATH=$PY2 pytest -q )
