@@ -89,7 +89,7 @@ _DISPLAY_COL_MAP = {
     "name_en": "Product Name",
     "category": "Category",
     "branch_name": "Branch Name",
-    "barcodes": "Barcode",            # <-- changed to singular "Barcode"
+    "barcodes": "Barcode",            # singular "Barcode"
     "brand": "Brand",
     "available_quantity": "Available Quantity",
     "actual_quantity": "Actual Quantity",
@@ -274,10 +274,11 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 diff_width = 12
                 widths.append(diff_width)
 
+                # create header format (bold) and normal formats (non-bold)
                 header_format = workbook.add_format({"bold": True})
-                first_col_format = workbook.add_format({"bold": True})
                 default_format = workbook.add_format({})
 
+                # set header bold only
                 worksheet.set_row(0, None, header_format)
 
                 for row_i in range(len(df_to_write)):
@@ -299,12 +300,10 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                         "diff_cell": diff_cell_addr
                     })
 
+                # set column widths without bolding data rows (only headers bold)
                 for idx, col_name in enumerate(header_cols):
                     col_width = widths[idx]
-                    if idx == 0:
-                        worksheet.set_column(idx, idx, col_width, first_col_format)
-                    else:
-                        worksheet.set_column(idx, idx, col_width, default_format)
+                    worksheet.set_column(idx, idx, col_width, default_format)
                 worksheet.set_column(diff_idx, diff_idx, widths[-1], default_format)
 
             # Create Summary as FIRST sheet
@@ -312,7 +311,6 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
             workbook.worksheets_objs.insert(0, workbook.worksheets_objs.pop())
 
             header_format = workbook.add_format({"bold": True})
-            first_col_format = workbook.add_format({"bold": True})
             default_format = workbook.add_format({})
 
             # Use exact header names expected by tests: 'Product Name', 'Barcode', 'Difference'
@@ -340,8 +338,8 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                         summary_ws.write(i, 1, "")
                     summary_ws.write_formula(i, 2, f"={entry['diff_cell']}")
 
-            # Apply formatting/widths to summary
-            summary_ws.set_column(0, 0, summary_widths[0], first_col_format)
+            # Apply widths to summary columns; only header row is bold so use default_format for columns
+            summary_ws.set_column(0, 0, summary_widths[0], default_format)
             summary_ws.set_column(1, 1, summary_widths[1], default_format)
             summary_ws.set_column(2, 2, summary_widths[2], default_format)
 
