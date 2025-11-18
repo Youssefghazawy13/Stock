@@ -204,21 +204,24 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
         filename = f"{safe_branch}_{date_str}.xlsm"
         out_path = output_dir / filename
 
-        with pd.ExcelWriter(out_path, engine="xlsxwriter", options={"strings_to_numbers": False}) as writer:
+        # NOTE: removed 'options' kwarg for ExcelWriter to be compatible with CI pandas version
+        with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
             workbook = writer.book
 
-            # Attach vba project if found
+            # attach vbaProject.bin if exists
             if vba_bin_path.exists():
                 try:
                     workbook.add_vba_project(str(vba_bin_path))
                 except Exception as e:
+                    # if attach fails, continue but warn in stdout
                     print(f"Warning: failed to attach vbaProject.bin: {e}")
             else:
+                # Informative warning (not fatal). The generated .xlsm will NOT contain the macro.
                 print(f"Warning: vbaProject.bin not found at {vba_bin_path}; generated .xlsm will not include scanner macro.")
 
             summary_entries = []
 
-            # Write brand sheets first
+            # write brand sheets
             for brand in brand_set:
                 brand_norm = str(brand).strip().lower()
                 rows = grouped.get((branch_key, brand_norm), [])
@@ -254,7 +257,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 present_cols = [c for c in cols_order if c in df.columns]
                 df_to_write = df[present_cols].copy()
 
-                # Map to display names
+                # Map internal names to display names
                 display_headers = [_DISPLAY_COL_MAP.get(c, c) for c in df_to_write.columns]
                 df_to_write.columns = display_headers
 
@@ -296,7 +299,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                 header_format = workbook.add_format({"bold": True})
                 default_format = workbook.add_format({})
 
-                # Bold header only
+                # set header bold only
                 worksheet.set_row(0, None, header_format)
 
                 for row_i in range(len(df_to_write)):
@@ -318,7 +321,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                         "diff_cell": diff_cell_addr
                     })
 
-                # Set column widths (no bolding of data rows)
+                # set column widths without bolding data rows (only headers bold)
                 for idx, col_name in enumerate(header_cols):
                     col_width = widths[idx]
                     worksheet.set_column(idx, idx, col_width, default_format)
@@ -340,7 +343,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
             header_format = workbook.add_format({"bold": True})
             default_format = workbook.add_format({})
 
-            # Headers expected by tests and by the macro: 'Product Name', 'Barcode', 'Difference'
+            # Use exact header names expected by tests: 'Product Name', 'Barcode', 'Difference'
             summary_headers = [_DISPLAY_COL_MAP["name_en"], "Barcode", _DISPLAY_COL_MAP["difference"]]
             summary_ws.write_row(0, 0, summary_headers, header_format)
 
@@ -365,7 +368,7 @@ def generate_branch_date_files(products_iter: Iterable[pd.DataFrame], schedule_d
                         summary_ws.write(i, 1, "")
                     summary_ws.write_formula(i, 2, f"={entry['diff_cell']}")
 
-            # Apply widths to summary columns; header is bold only
+            # Apply widths to summary columns; only header row is bold so use default_format for columns
             summary_ws.set_column(0, 0, summary_widths[0], default_format)
             summary_ws.set_column(1, 1, summary_widths[1], default_format)
             summary_ws.set_column(2, 2, summary_widths[2], default_format)
